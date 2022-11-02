@@ -449,6 +449,7 @@ class AdversarialRunner(object):
                       discard_grad=False, 
                       edit_level=False,
                       diffusion=False,
+                      reducing_noise=False,
                       num_edits=0, 
                       fixed_seeds=None):
         args = self.args
@@ -463,7 +464,7 @@ class AdversarialRunner(object):
                 if num_edits > 0:
                     levels = [self.level_store.get_level(seed) for seed in fixed_seeds]
                     self.ued_venv.reset_to_level_batch(levels)
-                    self.ued_venv.mutate_level_dist(num_edits=num_edits)
+                    self.ued_venv.mutate_level_dist(num_edits=num_edits, reducing_noise=reducing_noise)
                     self._update_plr_with_current_unseen_levels(parent_seeds=fixed_seeds)
                     return
                 
@@ -519,7 +520,7 @@ class AdversarialRunner(object):
 
             if is_env:
                 if diffusion:
-                    self.ued_venv.mutate_level_dist(num_edits=0)
+                    self.ued_venv.mutate_level_dist(num_edits=0, reducing_noise=reducing_noise)
                     self._update_plr_with_current_unseen_levels()
                     return
                 else:
@@ -696,6 +697,7 @@ class AdversarialRunner(object):
             level_replay = self._sample_replay_decision()
 
         diffusion = args.diffusion
+        reducing_noise = args.reducing_noise
 
         # Discard student gradients if not level replay (sampling new levels)
         student_discard_grad = False
@@ -715,6 +717,7 @@ class AdversarialRunner(object):
             is_env=True,
             level_replay=level_replay,
             diffusion=diffusion,
+            reducing_noise=reducing_noise,
             level_sampler=self._get_level_sampler('agent')[0],
             update_level_sampler=False)
 
@@ -823,6 +826,7 @@ class AdversarialRunner(object):
                 is_env=True,
                 edit_level=True,
                 diffusion=diffusion,
+                reducing_noise=reducing_noise,
                 num_edits=args.num_edits,
                 fixed_seeds=fixed_seeds)
 

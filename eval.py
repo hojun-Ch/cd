@@ -51,7 +51,7 @@ def parse_args():
 	parser.add_argument(
 		'--base_path',
 		type=str,
-		default='~/logs/dcd',
+		default='~/logs/accel',
 		help='Base path to experiment results directories.')
 	parser.add_argument(
 		'--xpid',
@@ -67,7 +67,7 @@ def parse_args():
 	parser.add_argument(
 		'--env_names',
 		type=str,
-		default='MultiGrid-Labyrinth-v0',
+		default='MultiGrid-Labyrinth-v0,MultiGrid-Maze-v0,MultiGrid-SixteenRooms-v0',
 		help='CSV string of evaluation environments.')
 	parser.add_argument(
 		'--result_path',
@@ -117,7 +117,7 @@ def parse_args():
 	parser.add_argument(
 		'--model_tar',
 		type=str,
-		default='model',
+		default='model_5000',
 		help='Name of .tar to evaluate.')
 	parser.add_argument(
 		'--model_name',

@@ -222,6 +222,7 @@ if __name__ == '__main__':
         'stable_adversary': False,
         'repeat': 0,
         'diffusion': False,
+        'reducing_noise': False,
 
         # PLR params
         'use_plr': False,

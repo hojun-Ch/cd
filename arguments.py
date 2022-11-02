@@ -215,6 +215,11 @@ parser.add_argument(
     type=str2bool, nargs='?', const=True, default=False,
     help='Use diffusion style env genertaion'
 )
+parser.add_argument(
+    'reducing_noise',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='add reducing noise rather than typical duffusion reverse process'
+)
 
 # PLR arguments.
 parser.add_argument(
