@@ -222,7 +222,12 @@ if __name__ == '__main__':
         'stable_adversary': False,
         'repeat': 0,
         'diffusion': False,
+        'train_diffusion': False,
+        'diffusion_step': 10,
+        'generator_loss': 'grad_norm',
         'reducing_noise': False,
+        'empty': False,
+        'train_editor': False,
 
         # PLR params
         'use_plr': False,

@@ -40,9 +40,9 @@ class TimeLimit(gym.Wrapper):
         self._elapsed_steps = 0
         return self.env.reset_random()
 
-    def reset_to_level(self, level):
+    def reset_to_level(self, level, diffusion=False):
         self._elapsed_steps = 0
-        return self.env.reset_to_level(level)
+        return self.env.reset_to_level(level, diffusion)
 
     def reset_agent(self):
         self._elapsed_steps = 0

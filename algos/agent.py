@@ -14,6 +14,12 @@ class ACAgent(object):
     	self.storage.after_update()
 
     	return info
+    
+    def get_loss_batch(self):
+        
+        info = self.algo.get_loss_batch(self.storage)
+        
+        return info
 
     def to(self, device):
     	self.algo.actor_critic.to(device)

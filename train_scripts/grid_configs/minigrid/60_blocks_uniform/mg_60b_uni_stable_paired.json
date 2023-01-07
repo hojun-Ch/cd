@@ -6,6 +6,7 @@
 
     "ued_algo": ["paired"],
     "stable_adversary": [true],
+    "repeat": [10],
     "num_processes": [32],
     "num_env_steps": [250000000],
     "num_steps": [256],

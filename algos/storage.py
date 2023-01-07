@@ -409,7 +409,13 @@ class RolloutStorage(object):
             SubsetRandomSampler(range(batch_size)),
             mini_batch_size,
             drop_last=False)
-     
+        
+        # sampler = BatchSampler(
+        #     SequentialSampler(range(batch_size)),
+        #     mini_batch_size,
+        #     drop_last=False
+        # )
+        
         for indices in sampler:
             if self.is_dict_obs:
                 obs_batch = {k: self.obs[k][:-1].view(-1, *self.obs[k].size()[2:])[indices] for k in self.obs.keys()}
@@ -448,6 +454,7 @@ class RolloutStorage(object):
             "to be greater than or equal to the number of "
             "PPO mini batches ({}).".format(num_processes, num_mini_batch))
         num_envs_per_batch = num_processes // num_mini_batch
+
         perm = torch.randperm(num_processes)
 
         for start_ind in range(0, num_processes, num_envs_per_batch):

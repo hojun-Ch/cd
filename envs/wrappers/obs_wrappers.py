@@ -157,12 +157,12 @@ class VecPreprocessImageWrapper(VecEnvWrapper):
 		obs = self.venv.reset_agent()
 		return self._preprocess(obs, obs_key=self.obs_key)
 
-	def reset_to_level(self, level, index):
-		obs = self.venv.reset_to_level(level, index)
+	def reset_to_level(self, level, index, diffusion=False):
+		obs = self.venv.reset_to_level(level, index, diffusion)
 		return self._preprocess(obs, obs_key=self.obs_key)
 
-	def reset_to_level_batch(self, level):
-		obs = self.venv.reset_to_level_batch(level)
+	def reset_to_level_batch(self, level, diffusion=False):
+		obs = self.venv.reset_to_level_batch(level, diffusion)
 		return self._preprocess(obs, obs_key=self.obs_key)
 
 	def step_wait(self):

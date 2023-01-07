@@ -10,6 +10,7 @@ import time
 import timeit
 import logging
 from arguments import parser
+import time
 
 import torch
 import gym
@@ -158,14 +159,15 @@ if __name__ == '__main__':
             use_global_critic=args.use_global_critic,
             use_global_policy=args.use_global_policy,
             device=device)
-
     # === Train === 
     last_checkpoint_idx = getattr(train_runner, args.checkpoint_basis)
     update_start_time = timer()
     num_updates = int(args.num_env_steps) // args.num_steps // args.num_processes
     print("num_updates:", num_updates)
     print("initial_update_count:", initial_update_count)
+    start = time.time()
     for j in range(initial_update_count, num_updates):
+        
         stats = train_runner.run()
 
         # === Perform logging ===
@@ -176,7 +178,11 @@ if __name__ == '__main__':
         save_screenshot = \
             args.screenshot_interval > 0 and \
                 (j % (args.screenshot_interval // (args.repeat + 1)) == 0)
-        print(j, save_screenshot)
+        
+        if j == 0:
+            generator_path = checkpoint_path = os.path.expandvars(os.path.expanduser("%s/%s/%s" % (log_dir, args.xpid, f"pretrained_generator.tar")))
+            train_runner.generator.save_model(generator_path)
+        
         if log:
             # Eval
             test_stats = {}
@@ -193,6 +199,11 @@ if __name__ == '__main__':
             stats.update({'sps': sps})
             stats.update(test_stats) # Ensures sps column is always before test stats
             log_stats(stats)
+            
+            print("generated env: ", j * args.num_processes)
+            print("student updates:", train_runner.student_grad_updates)
+            print("eval results:", test_stats)
+            print("time elapse:", time.time() - start)
 
         checkpoint_idx = getattr(train_runner, args.checkpoint_basis)
 
@@ -209,10 +220,13 @@ if __name__ == '__main__':
                 checkpoint(checkpoint_idx)
                 logging.info(f"\nSaved checkpoint after update {j}")
                 logging.info(f"\nLast update: {is_last_update}")
+                
             elif train_runner.num_updates > 0 and args.archive_interval > 0 \
                 and checkpoint_idx % args.archive_interval == 0:
                 checkpoint(checkpoint_idx)
                 logging.info(f"\nArchived checkpoint after update {j}")
+                generator_path = checkpoint_path = os.path.expandvars(os.path.expanduser("%s/%s/%s" % (log_dir, args.xpid, f"generator_{checkpoint_idx}.tar")))
+                train_runner.generator.save_model(generator_path)
 
         if save_screenshot:
             level_info = train_runner.sampled_level_info

@@ -174,6 +174,7 @@ parser.add_argument(
     help='Recurrent hidden state size.')
 
 
+
 # === UED arguments ===
 parser.add_argument(
     '--ued_algo',
@@ -216,9 +217,44 @@ parser.add_argument(
     help='Use diffusion style env genertaion'
 )
 parser.add_argument(
-    'reducing_noise',
+    '--train_diffusion',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Train diffusion style env genertaion'
+)
+parser.add_argument(
+    '--diffusion_step',
+    type=int, nargs='?', const=10, default=10,
+    help='Diffusion step for generator'
+)
+parser.add_argument(
+    '--generator_loss',
+    type=str, nargs='?', const='value_loss', default='grad_norm',
+    help='a value generator wants to maximize(regret estimation)'
+)
+parser.add_argument(
+    '--unsolvable_penalty',
+    type=float, nargs='?', const=0.0, default=1.0,
+    help='penalty to generator when it created unsolvable env for agent'
+)
+parser.add_argument(
+    '--pre_train_epoch',
+    type=int, nargs='?', const=1000, default=100,
+    help='pre-train epoch'
+)
+parser.add_argument(
+    '--reducing_noise',
     type=str2bool, nargs='?', const=True, default=False,
     help='add reducing noise rather than typical duffusion reverse process'
+)
+parser.add_argument(
+    '--empty',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Starts from empty env(gridEnv)'
+)
+parser.add_argument(
+    '--train_editor',
+    type=str2bool, nargs='?', const=True, default=False,
+    help='Train editor(accel)'
 )
 
 # PLR arguments.

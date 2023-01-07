@@ -1,0 +1,3 @@
+metric,0
+solved_rate:MultiGrid-PerfectMazeMedium-v0,0.79
+test_returns:MultiGrid-PerfectMazeMedium-v0,0.52143884

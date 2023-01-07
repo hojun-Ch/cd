@@ -167,6 +167,10 @@ class AdversarialEnv(multigrid.MultiGridEnv):
     return 1
 
   @property
+  def distribution(self):
+    return self.grid.grid_dist
+  
+  @property
   def encoding(self):
     return self.grid.encode()
 
@@ -275,9 +279,8 @@ class AdversarialEnv(multigrid.MultiGridEnv):
 
     return obs
 
-  def reset_to_level(self, level):
+  def reset_to_level(self, level, diffusion=False):
     self.reset()
-
     if isinstance(level, str):
       actions = [int(a) for a in level.split()]
 
@@ -290,7 +293,10 @@ class AdversarialEnv(multigrid.MultiGridEnv):
           obs = self.reset_agent()
     else:
       # reset based on encoding
-      obs = self.reset_to_encoding(level)
+      if diffusion:
+        obs = self.reset_to_dist(level)
+      else:
+        obs = self.reset_to_encoding(level)
 
     return obs
 
@@ -299,7 +305,25 @@ class AdversarialEnv(multigrid.MultiGridEnv):
     self.compute_metrics()
 
     return self.reset_agent()
-
+  def reset_to_dist(self, dist):
+    self.grid.set_dist(dist)
+    y1, x1, y2, x2 = self.grid.dist_to_grid()
+        
+    # set agent location as minimum point
+    x1 += 1
+    y1 += 1
+    self.place_one_agent(0, top=(x1,y1), size=(1,1))
+    self.agent_start_pos = np.array((x1,y1))
+    # set goal location as second minimum point
+    x2 += 1
+    y2 += 1
+    self.put_obj(minigrid.Goal(), x2, y2)
+    self.goal_pos = np.array((x2,y2))
+    
+    self.compute_metrics()
+    
+    return self.reset_agent()
+    
   def _clean_loc(self, x,y):
     # Remove any walls
     self.remove_wall(x, y)
@@ -330,6 +354,7 @@ class AdversarialEnv(multigrid.MultiGridEnv):
       - Place entities in each location.
       - Place goal and agent if they do not exist.
     """
+    
     num_tiles = (self.width-2)*(self.height-2)
     edit_locs = list(set(np.random.randint(0, num_tiles, num_edits)))
 
@@ -393,7 +418,7 @@ class AdversarialEnv(multigrid.MultiGridEnv):
 
       self.place_one_agent(0, top=(x,y), size=(1,1))
       self.agent_start_pos = np.array((x,y))
-
+    
     # Reset meta info
     self.graph = grid_graph(dim=[self.width-2, self.height-2])
     self.step_count = 0
@@ -403,7 +428,7 @@ class AdversarialEnv(multigrid.MultiGridEnv):
 
     return self.reset_agent()
 
-  def mutate_level_dist(self, num_edits=0, adversary_action=None, random_AandG=False, reducing_noise=False):
+  def mutate_level_dist(self, num_edits, adversary_action=0, random_AandG=False, reducing_noise=False, empty=False):
     """
     Mutate the dist of current level:
       - get adversary action 
@@ -411,7 +436,7 @@ class AdversarialEnv(multigrid.MultiGridEnv):
       - Place goal and agent following random_AandG
     
     random_AandG:
-      - true: agent and goal are placed on the random empty grid 
+      - true: agent and goal are placed on the random empty grid
       - false: agent and goal are placed on the 1st, 2nd minimum grid
     reducing noise:
       - true:reducing noise are added as num_edits grows
@@ -420,24 +445,30 @@ class AdversarialEnv(multigrid.MultiGridEnv):
     num_tiles = (self.width-2)*(self.height-2)
     x_t = self.grid.grid_dist
 
-    num_edits = np.clip(num_edits, 0, 100)
-    sigma_t  = np.sqrt(self.beta_schedule[-num_edits])
-
-    if adversary_action == None:
-      adversary_action = np.random.randn(num_tiles)
-      x_new = x_t
-
-    if num_edits > 0:
-      if reducing_noise:
-        x_new = x_t + np.random.randn(num_tiles) * (1 - num_edits / 101)
-      else:
-        x_new = (1 / np.sqrt(self.alpha[-num_edits])) * \
-          (x_t - (1 - self.alpha[-num_edits]) / np.sqrt(1 - self.alpha_bar[-num_edits]) * adversary_action) + \
-            sigma_t * np.random.randn(num_tiles)
-
+    # limit n_edits to 100 (make lower-bound for added noise)
+    
+    if reducing_noise and num_edits > 0:
+      
+      # noise decreases to 0.1
+      n_edits = np.clip(num_edits, 0, 51)
+      x_new = x_t + np.random.randn(num_tiles) * max((1 - n_edits / 51), 0.1)
+        
+        # if np.array_equal(x_new, x_t):
+        #   adversary_action = np.random.randn(num_tiles)
+        #   x_new = x_t + np.random.randn(num_tiles) * 0.1
+      self.grid.set_dist(x_new)
+    
+    elif empty:
+      # set empty-like grid
+      x_new = np.random.randn(num_tiles) - 2.0
+      self.grid.set_dist(x_new)
+    
+    else:
+      x_new = x_t + adversary_action
+      x_new = np.clip(x_new, -1, 1)
       self.grid.set_dist(x_new)
 
-    self.grid.dist_to_grid()
+    y1, x1, y2, x2 = self.grid.dist_to_grid()
 
     # for i in range(self.width):
     #   for j in range(self.height):
@@ -481,20 +512,18 @@ class AdversarialEnv(multigrid.MultiGridEnv):
       self.agent_start_pos = None
       self.goal_pos = None
 
-      x_new = x_new.reshape(self.height-2, self.width - 2)
-      min_idxs = np.argpartition(x_new, 2, axis=None)
+
       # set agent location as minimum point
-      y, x = np.unravel_index(min_idxs[0], x_new.shape)
-      free_mask[y,x] = False
-      x += 1
-      y += 1
+      free_mask[y1,x1] = False
+      x = x1 + 1
+      y = y1 + 1
       self.place_one_agent(0, top=(x,y), size=(1,1))
       self.agent_start_pos = np.array((x,y))
+      
       # set goal location as second minimum point
-      y, x = np.unravel_index(min_idxs[1], x_new.shape)
-      free_mask[y,x] = False
-      x += 1
-      y += 1
+      free_mask[y2,x2] = False
+      x = x2 + 1
+      y = y2 + 1
       self.put_obj(minigrid.Goal(), x, y)
       self.goal_pos = np.array((x,y))
 
@@ -505,7 +534,9 @@ class AdversarialEnv(multigrid.MultiGridEnv):
     self.adversary_step_count = 0
     self.reset_metrics()
     self.compute_metrics()
-    return self.reset_agent()
+    self.reset_agent()
+    
+    return self.grid.grid_dist.copy()
 
   def remove_wall(self, x, y):
     if (x-1, y-1) in self.wall_locs:

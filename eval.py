@@ -22,6 +22,7 @@ from tqdm import tqdm
 import os
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import gym
 
 from envs.registration import make as gym_make
 from envs.multigrid.maze import *
@@ -67,7 +68,7 @@ def parse_args():
 	parser.add_argument(
 		'--env_names',
 		type=str,
-		default='MultiGrid-Labyrinth-v0,MultiGrid-Maze-v0,MultiGrid-SixteenRooms-v0',
+		default='MultiGrid-SixteenRooms-v0,MultiGrid-SixteenRoomsFewerDoors-v0,MiniGrid-SimpleCrossingS9N1-v0,MiniGrid-FourRooms-v0,MultiGrid-SmallCorridor-v0,MultiGrid-LargeCorridor-v0,MultiGrid-Labyrinth-v0,MultiGrid-Labyrinth2-v0,MultiGrid-Maze-v0,MultiGrid-Maze2-v0,MultiGrid-Maze3-v0,MultiGrid-PerfectMazeMedium-v0',
 		help='CSV string of evaluation environments.')
 	parser.add_argument(
 		'--result_path',
@@ -83,7 +84,7 @@ def parse_args():
 	parser.add_argument(
 		'--accumulator',
 		type=str,
-		default=None,
+		default= 'mean',
 		help="Function for accumulating across multiple evaluation runs.")
 	parser.add_argument(
 		'--singleton_env',
@@ -117,7 +118,7 @@ def parse_args():
 	parser.add_argument(
 		'--model_tar',
 		type=str,
-		default='model_5000',
+		default='model_20000',
 		help='Name of .tar to evaluate.')
 	parser.add_argument(
 		'--model_name',
@@ -381,6 +382,9 @@ if __name__ == '__main__':
 
 	args = DotDict(vars(parse_args()))
 	args.num_processes = min(args.num_processes, args.num_episodes)
+ 
+	torch.manual_seed(args.seed)
+	np.random.seed(args.seed)
 
 	# === Determine device ====
 	device = 'cpu'

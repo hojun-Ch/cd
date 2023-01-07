@@ -54,3 +54,36 @@ class Categorical(nn.Module):
     def forward(self, x):
         x = self.linear(x)
         return FixedCategorical(logits=x)
+
+class FixedGaussian(torch.distributions.Normal):
+    """
+    Categorical distribution object
+    """
+    def sample(self):
+        return super().sample().unsqueeze(-1)
+
+    def log_probs(self, actions):
+        return (
+            super()
+            .log_prob(actions.squeeze(-1))
+            .view(actions.size(0), -1)
+            .sum(-1)
+            .unsqueeze(-1)
+        )
+
+    def mode(self):
+        return self.probs.argmax(dim=-1, keepdim=True)
+
+class Gaussian(nn.Module):
+    """
+    Gaussian distribution (NN module)
+    """
+    def __init__(self, num_inputs, num_outputs):
+        super(Gaussian, self).__init__()
+        
+        self.linear = nn.Linear(num_inputs, num_outputs)
+        self.std = 1.0
+        
+    def forward(self, x):
+        x = self.linear(x)
+        return FixedGaussian(x, self.std)

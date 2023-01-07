@@ -8,8 +8,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import gym
 
-from .distributions import Categorical  
+from .distributions import Categorical, Gaussian  
 from .common import *
 
 class MultigridNetwork(DeviceAwareModule):
@@ -76,6 +77,11 @@ class MultigridNetwork(DeviceAwareModule):
             self.base_output_size = recurrent_hidden_size
 
         # Policy head
+        # if type(action_space) == gym.spaces.box.Box:
+        #     self.actor = nn.Sequential(
+        #         make_fc_layers_with_hidden_sizes(actor_fc_layers, input_size=self.base_output_size),
+        #         Gaussian(actor_fc_layers[-1], num_actions)
+        #     )
         self.actor = nn.Sequential(
             make_fc_layers_with_hidden_sizes(actor_fc_layers, input_size=self.base_output_size),
             Categorical(actor_fc_layers[-1], num_actions)

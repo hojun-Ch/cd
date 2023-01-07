@@ -10,6 +10,7 @@
 # https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/common/vec_env/subproc_vec_env.py
 
 import multiprocessing as mp
+import argparse
 
 import numpy as np
 from .vec_env import VecEnv, CloudpickleWrapper
@@ -76,7 +77,9 @@ def worker(remote, parent_remote, env_fn_wrappers):
             elif cmd == 'get_spaces_spec':
                 remote.send(CloudpickleWrapper((envs[0].observation_space, envs[0].action_space, envs[0].spec)))
             elif cmd == 'reset_to_level':
-                remote.send([envs[0].reset_to_level(data)])
+                remote.send([envs[0].reset_to_level(level=data[0], diffusion=data[1])])
+            elif cmd == 'mutate_level_dist':
+                remote.send([envs[0].mutate_level_dist(num_edits=data[0], adversary_action=data[1], random_AandG=data[2], reducing_noise=data[3], empty=data[4])])
             elif cmd == 'reset_alp_gmm':
                 remote.send([envs[0].reset_alp_gmm(data)])
             elif cmd == 'max_episode_steps':
@@ -332,17 +335,18 @@ class ParallelAdversarialVecEnv(SubprocVecEnv):
         return _flatten_obs(obs)
 
     # reset_to_level
-    def reset_to_level(self, level, index):
+    def reset_to_level(self, level, index, diffusion=False):
         self._assert_not_closed()
-        self.remotes[index].send(('reset_to_level', level))
+        data = [level, diffusion]
+        self.remotes[index].send(('reset_to_level', data))
         self.waiting = True
         obs = self.remotes[index].recv()
         self.waiting = False
         return _flatten_obs(obs)
 
-    def reset_to_level_batch(self, level):
+    def reset_to_level_batch(self, level, diffusion=False):
         self._assert_not_closed()
-        [remote.send(('reset_to_level', level[i])) for i, remote in enumerate(self.remotes)]
+        [remote.send(('reset_to_level', [level[i], diffusion])) for i, remote in enumerate(self.remotes)]
         self.waiting = True
         obs = [remote.recv() for remote in self.remotes]
         self.waiting = False
@@ -359,9 +363,9 @@ class ParallelAdversarialVecEnv(SubprocVecEnv):
         obs = _flatten_list(obs)
         return _flatten_obs(obs)
 
-    def mutate_level_dist(self, num_edits, adversary_action=None):
+    def mutate_level_dist(self, num_edits, adversary_action, random_AandG=True, reducing_noise=True, empty=False):
         self._assert_not_closed()
-        [remote.send(('mutate_level_dist', num_edits)) for _, remote in enumerate(self.remotes)]
+        [remote.send(('mutate_level_dist', [num_edits[i], adversary_action[i], random_AandG, reducing_noise, empty])) for i, remote in enumerate(self.remotes)]
         self.waiting = True
         obs = [remote.recv() for remote in self.remotes]
         self.waiting = False
@@ -432,6 +436,8 @@ class ParallelAdversarialVecEnv(SubprocVecEnv):
     def get_encodings(self, index=None):
         return self.remote_attr('encoding', flatten=True, index=index)
 
+    def get_dists(self, index=None):
+        return self.remote_attr('distribution', flatten=True, index=index)
     # Navigation-specific
     def get_distance_to_goal(self):
         return self.remote_attr('distance_to_goal', flatten=True)

@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import time
 import os
 from collections import deque, defaultdict
 
@@ -22,6 +23,8 @@ from teachDeepRL.teachers.teacher_controller import TeacherController
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+
+from .unet_agent import unetAgent
 
 
 class AdversarialRunner(object):
@@ -72,23 +75,32 @@ class AdversarialRunner(object):
 
         self.agent_rollout_steps = args.num_steps
         self.adversary_env_rollout_steps = self.venv.adversary_observation_space['time_step'].high[0]
-        print("adversary rollout step:", self.adversary_env_rollout_steps)
 
         self.is_dr = args.ued_algo == 'domain_randomization'
-        self.is_training_env = args.ued_algo in ['paired', 'flexible_paired', 'minimax']
+        self.is_training_env = args.ued_algo in ['paired', 'flexible_paired', 'minimax'] 
+        self.train_editor = args.train_editor
         self.is_paired = args.ued_algo in ['paired', 'flexible_paired']
         self.is_stable_adversary = args.stable_adversary
         self.repeat = args.repeat
         self.requires_batched_vloss = args.use_editor and args.base_levels == 'easy'
 
         self.is_alp_gmm = args.ued_algo == 'alp_gmm'
- 
+        
+        # if args.diffusion:
+        #     self.generator = unetAgent()
+        if args.diffusion and args.train_diffusion:
+            if args.env_name.startswith("MultiGrid"):
+                self.generator = unetAgent(args=args, env_name="Minigrid")
+                
+                self.generator.to(device)
+                self.generator.train_mode()
+                
+                # print("start unsupervised pre-training")
+                # self.generator.unsup_pre_train()
 
         # Track running mean and std of env returns for return normalization
         if args.adv_normalize_returns:
             self.env_return_rms = RunningMeanStd(shape=())
-
-        self.device = device
 
         if train:
             self.train()
@@ -118,7 +130,10 @@ class AdversarialRunner(object):
                 self.level_samplers['agent'] = LevelSampler(**plr_args)
 
             if self.use_byte_encoding:
-                example = self.ued_venv.get_encodings()[0]
+                if args.diffusion:
+                    example = self.ued_venv.get_dists()[0]
+                else:
+                    example = self.ued_venv.get_encodings()[0]
                 data_info = {
                     'numpy': True,
                     'dtype': example.dtype,
@@ -361,12 +376,15 @@ class AdversarialRunner(object):
         assert self.args.use_plr, 'Only call _get_active_levels when using PLR.'
 
         env_name = self.args.env_name
+        is_diffusion = self.args.diffusion
 
         is_multigrid = env_name.startswith('MultiGrid')
         is_car_racing = env_name.startswith('CarRacing')
         is_bipedal_walker = env_name.startswith('BipedalWalker')
 
-        if self.use_byte_encoding:
+        if is_diffusion:
+            return [x.tobytes() for x in self.ued_venv.get_dists()]
+        elif self.use_byte_encoding:
             return [x.tobytes() for x in self.ued_venv.get_encodings()]
         elif is_multigrid:
             return self.agents['adversary_env'].storage.get_action_traj(as_string=True)
@@ -451,39 +469,97 @@ class AdversarialRunner(object):
                       diffusion=False,
                       reducing_noise=False,
                       num_edits=0, 
-                      fixed_seeds=None):
+                      fixed_seeds=None,
+                      editing=False,
+                      replay_env=None
+                      ):
+        
         args = self.args
+        
         if is_env:
-            if edit_level and not diffusion: # Get mutated levels
-                levels = [self.level_store.get_level(seed) for seed in fixed_seeds]
-                self.ued_venv.reset_to_level_batch(levels)
-                self.ued_venv.mutate_level(num_edits=num_edits)
-                self._update_plr_with_current_unseen_levels(parent_seeds=fixed_seeds)
-                return
-            if diffusion:
-                if num_edits > 0:
+            if edit_level: 
+                if diffusion:
+                    
+                    if args.train_diffusion:
+                        
+                        levels_np = replay_env['levels']
+                        num_edits_np = replay_env['num_edits']
+                        
+                        levels = [level for level in levels_np]
+                        num_edits = [num_edit for num_edit in num_edits_np]
+                        adversary_action, __ = self.generator.easy_act(levels_np, num_edits_np)
+                        adversary_action.requires_grad = False
+                        adversary_action = adversary_action.detach().clone().cpu().numpy()
+                        
+                    else:
+                        levels = [self.level_store.get_level(seed) for seed in fixed_seeds]
+                        levels_np = np.array(levels).copy()
+                        # num_edits means num of mutation here
+                        num_edits = [len(self.level_store.seed2parent[seed])+1 for seed in fixed_seeds]
+                        num_edits_np = np.array(num_edits).copy()
+                        
+                        adversary_action = [0] * args.num_processes
+
+                    self.ued_venv.reset_to_level_batch(level=levels, diffusion=diffusion)
+
+
+                    next_levels = self.ued_venv.mutate_level_dist(num_edits=num_edits,adversary_action=adversary_action,reducing_noise=reducing_noise)
+                    
+                    if args.train_diffusion:
+                        return levels_np, adversary_action, num_edits_np, next_levels
+                    
+                    self._update_plr_with_current_unseen_levels(parent_seeds=fixed_seeds)
+                    
+                    return levels_np, adversary_action, num_edits_np, next_levels
+                 
+                else: # Get mutated levels
                     levels = [self.level_store.get_level(seed) for seed in fixed_seeds]
                     self.ued_venv.reset_to_level_batch(levels)
-                    self.ued_venv.mutate_level_dist(num_edits=num_edits, reducing_noise=reducing_noise)
+                    self.ued_venv.mutate_level(num_edits=num_edits)
                     self._update_plr_with_current_unseen_levels(parent_seeds=fixed_seeds)
                     return
                 
             if level_replay: # Get replay levels
-                self.current_level_seeds = [level_sampler.sample_replay_level() for _ in range(args.num_processes)]
-                # print("current_level_seed", self.current_level_seeds)
-                levels = [self.level_store.get_level(seed) for seed in self.current_level_seeds]
-                # print("levels:", levels[0])
-                self.ued_venv.reset_to_level_batch(levels)
-                return self.current_level_seeds
+                if args.train_diffusion:
+                    if self.generator.replay_buffer.pos == 0 and not self.generator.replay_buffer.full:
+                        levels = self.ued_venv.mutate_level_dist(adversary_action=[0] * args.num_processes, num_edits=[0] * args.num_processes, reducing_noise=reducing_noise, empty = args.empty)
+                        num_edits = np.array([0] * args.num_processes)
+                    else:
+                        replay_data = self.generator.replay_buffer.sample(args.num_processes)
+                        next_obs = replay_data.next_observations.clone().detach().cpu()
+                        num_edits = replay_data.timesteps.clone().detach().cpu() + 1
+                        num_edits = num_edits.squeeze()   
+                        num_edits = num_edits.numpy()
+                        done = num_edits >= args.diffusion_step
+                        num_edits[done] = 0
+                        
+                        levels = next_obs.numpy()
+                        levels = levels.reshape((args.num_processes, -1))
+                        for i in range(args.num_processes):
+                            if done[i]:
+                                levels[i] = self.generator.random_act()
+                    self.ued_venv.reset_to_level_batch(level=levels, diffusion=diffusion)
+                    env_info = {}
+                    env_info['levels'] = levels
+                    env_info['num_edits'] = num_edits
+                    return env_info
+                else:
+                    self.current_level_seeds = [level_sampler.sample_replay_level() for _ in range(args.num_processes)]
+                    levels = [self.level_store.get_level(seed) for seed in self.current_level_seeds]
+                    self.ued_venv.reset_to_level_batch(level=levels, diffusion=diffusion)
+                    return self.current_level_seeds
+            
             elif self.is_dr and not args.use_plr: 
                 obs = self.ued_venv.reset_random() # don't need obs here
                 self.total_seeds_collected += args.num_processes
                 return
+            
             elif self.is_dr and args.use_plr and args.use_reset_random_dr:
                 obs = self.ued_venv.reset_random() # don't need obs here
                 self._update_plr_with_current_unseen_levels(parent_seeds=fixed_seeds)
                 self.total_seeds_collected += args.num_processes
                 return
+            
             elif self.is_alp_gmm:
                 obs = self.alp_gmm_teacher.set_env_params(self.ued_venv)
                 self.total_seeds_collected += args.num_processes
@@ -500,7 +576,6 @@ class AdversarialRunner(object):
         mean_return = 0
 
         rollout_returns = [[] for _ in range(args.num_processes)]
-
         for step in range(num_steps):
             if args.render:
                 self.venv.render_to_screen()
@@ -520,11 +595,14 @@ class AdversarialRunner(object):
 
             if is_env:
                 if diffusion:
-                    self.ued_venv.mutate_level_dist(num_edits=0, reducing_noise=reducing_noise)
+                    self.ued_venv.mutate_level_dist(adversary_action=[0] * args.num_processes, num_edits=[0] * args.num_processes, reducing_noise=reducing_noise, empty = args.empty)
+                    if args.train_diffusion:
+                        return
                     self._update_plr_with_current_unseen_levels()
                     return
                 else:
                     obs, reward, done, infos = self.ued_venv.step_adversary(_action)
+        
             else:
                 obs, reward, done, infos = self.venv.step_env(_action, reset_random=reset_random)
                 if args.clip_reward:
@@ -541,7 +619,7 @@ class AdversarialRunner(object):
 
                 done = np.ones_like(done, dtype=np.float)
 
-            if level_sampler and level_replay:
+            if level_sampler and level_replay and not args.train_diffusion:
                 next_level_seeds = [s for s in self.current_level_seeds]
                 
             for i, info in enumerate(infos):
@@ -561,10 +639,10 @@ class AdversarialRunner(object):
                                 agent.storage.insert_truncated_obs(truncated_obs, index=i)
 
                         # If using PLR, sample next level
-                        if level_sampler and level_replay:
+                        if level_sampler and level_replay and not args.train_diffusion:
                             level_seed = level_sampler.sample_replay_level()
                             level = self.level_store.get_level(level_seed)
-                            obs_i = self.venv.reset_to_level(level, i)
+                            obs_i = self.venv.reset_to_level(level, i, diffusion)
                             set_obs_at_index(obs, obs_i, i)
                             next_level_seeds[i] = level_seed
                             self.current_level_seeds[i] = level_seed
@@ -573,7 +651,6 @@ class AdversarialRunner(object):
                         if self.is_alp_gmm:
                             self.alp_gmm_teacher.record_train_episode(rollout_returns[i][-1], index=i)
                             self.alp_gmm_teacher.set_env_params(self.venv)
-
             # If done then clean the history of observations.
             masks = torch.FloatTensor(
                 [[0.0] if done_ else [1.0] for done_ in done])
@@ -596,11 +673,11 @@ class AdversarialRunner(object):
                 level_seeds=current_level_seeds,
                 cliffhanger_masks=cliffhanger_masks)
 
-            if level_sampler and level_replay:
+            if level_sampler and level_replay and not args.train_diffusion:
                 self.current_level_seeds = next_level_seeds
 
         # Add generated env to level store (as a constructive string representation)
-        if is_env and args.use_plr and not level_replay:
+        if is_env and args.use_plr and not level_replay and not args.train_diffusion:
             self._update_plr_with_current_unseen_levels()
 
         rollout_info = self._get_rollout_return_stats(rollout_returns)
@@ -612,7 +689,7 @@ class AdversarialRunner(object):
                 next_value = agent.get_value(
                     obs_id, agent.storage.get_recurrent_hidden_state(-1),
                     agent.storage.masks[-1]).detach()
-
+            
             agent.storage.compute_returns(
                 next_value, args.use_gae, args.gamma, args.gae_lambda)
 
@@ -628,8 +705,17 @@ class AdversarialRunner(object):
             if level_sampler and update_level_sampler:
                 level_sampler.update_with_rollouts(agent.storage)
 
-            value_loss, action_loss, dist_entropy, info = agent.update(discard_grad=discard_grad)
+            if args.train_diffusion or args.train_editor:
+                total_loss_batch, value_loss_batch, policy_loss_batch, grad_norm_batch = agent.get_loss_batch()
+                rollout_info.update({
+                    'value_loss_batch': value_loss_batch,
+                    'total_loss_batch': total_loss_batch,
+                    'policy_loss_batch': policy_loss_batch,
+                    "grad_norm_batch": grad_norm_batch
+                })
 
+            value_loss, action_loss, dist_entropy, info = agent.update(discard_grad=discard_grad)
+            
             if level_sampler and update_level_sampler:
                 level_sampler.after_update()
 
@@ -644,6 +730,9 @@ class AdversarialRunner(object):
             if args.log_action_complexity:
                 rollout_info.update({'action_complexity': agent.storage.get_action_complexity()})
 
+            if editing and (args.train_diffusion or args.train_editor):
+                return rollout_info
+            
         return rollout_info
 
     def _compute_env_return(self, agent_info, adversary_agent_info):
@@ -686,6 +775,7 @@ class AdversarialRunner(object):
         return env_return
 
     def run(self):
+                
         args = self.args
 
         adversary_env = self.agents['adversary_env']
@@ -693,9 +783,12 @@ class AdversarialRunner(object):
         adversary_agent = self.agents['adversary_agent']
 
         level_replay = False
-        if args.use_plr and self.is_training:
+        if args.use_plr and self.is_training and not args.train_diffusion:
             level_replay = self._sample_replay_decision()
-
+        
+        if args.diffusion:
+            level_replay = np.random.random() < args.level_replay_prob
+            
         diffusion = args.diffusion
         reducing_noise = args.reducing_noise
 
@@ -707,19 +800,32 @@ class AdversarialRunner(object):
             student_discard_grad = True
 
         if self.is_training and not student_discard_grad:
-            self.student_grad_updates += 1
+            self.student_grad_updates += self.repeat + 1
 
         # Generate a batch of adversarial environments
-        env_info = self.agent_rollout(
-            agent=adversary_env, 
-            num_steps=self.adversary_env_rollout_steps, 
-            update=False,
-            is_env=True,
-            level_replay=level_replay,
-            diffusion=diffusion,
-            reducing_noise=reducing_noise,
-            level_sampler=self._get_level_sampler('agent')[0],
-            update_level_sampler=False)
+        if args.train_diffusion:
+            env_info = self.agent_rollout(
+                agent=adversary_env, 
+                num_steps=self.adversary_env_rollout_steps, 
+                update=False,
+                is_env=True,
+                level_replay=level_replay,
+                diffusion=diffusion,
+                reducing_noise=reducing_noise,
+                level_sampler=self._get_level_sampler('agent')[0],
+                update_level_sampler=False)
+            
+        else:
+            env_info = self.agent_rollout(
+                agent=adversary_env, 
+                num_steps=self.adversary_env_rollout_steps, 
+                update=False,
+                is_env=True,
+                level_replay=level_replay,
+                diffusion=diffusion,
+                reducing_noise=reducing_noise,
+                level_sampler=self._get_level_sampler('agent')[0],
+                update_level_sampler=False)
 
         # Run agent episodes
         level_sampler, is_updateable = self._get_level_sampler('agent')
@@ -728,10 +834,10 @@ class AdversarialRunner(object):
             num_steps=self.agent_rollout_steps,
             update=self.is_training,
             level_replay=level_replay,
+            diffusion=diffusion,
             level_sampler=level_sampler,
             update_level_sampler=is_updateable,
             discard_grad=student_discard_grad)
-
         # Use a separate PLR curriculum for the antagonist
         if level_replay and self.is_paired and (args.protagonist_plr == args.antagonist_plr):
             self.agent_rollout(
@@ -740,6 +846,7 @@ class AdversarialRunner(object):
                 update=False,
                 is_env=True,
                 level_replay=level_replay,
+                diffusion=diffusion,
                 level_sampler=self._get_level_sampler('adversary_agent')[0],
                 update_level_sampler=False)
 
@@ -752,11 +859,12 @@ class AdversarialRunner(object):
                 num_steps=self.agent_rollout_steps, 
                 update=self.is_training,
                 level_replay=level_replay,
+                diffusion=diffusion,
                 level_sampler=level_sampler,
                 update_level_sampler=is_updateable,
                 discard_grad=student_discard_grad)
 
-        # repear rollout on the same environment
+        # repeat rollout on the same environment
         if self.is_stable_adversary:
             repeat_count = 0
             while (repeat_count < self.repeat):
@@ -766,6 +874,7 @@ class AdversarialRunner(object):
                     num_steps=self.agent_rollout_steps,
                     update=self.is_training,
                     level_replay=level_replay,
+                    diffusion=diffusion,
                     level_sampler=level_sampler,
                     update_level_sampler=is_updateable,
                     discard_grad=student_discard_grad)
@@ -778,6 +887,7 @@ class AdversarialRunner(object):
                         num_steps=self.agent_rollout_steps, 
                         update=self.is_training,
                         level_replay=level_replay,
+                        diffusion=diffusion,
                         level_sampler=level_sampler,
                         update_level_sampler=is_updateable,
                         discard_grad=student_discard_grad)
@@ -789,12 +899,18 @@ class AdversarialRunner(object):
         edit_level = self._should_edit_level() and level_replay
 
 
-
+        
         if level_replay:
-            sampled_level_info = {
-                'level_replay': True,
-                'num_edits': [len(self.level_store.seed2parent[x])+1 for x in env_info],
-            }
+            if args.train_diffusion:
+                sampled_level_info = {
+                    'level_replay': True,
+                    'num_edits': [t for t in env_info['num_edits']]
+                }
+            else:
+                sampled_level_info = {
+                    'level_replay': True,
+                    'num_edits': [len(self.level_store.seed2parent[x])+1 for x in env_info],
+                }
         else:
             sampled_level_info = {
                 'level_replay': False,
@@ -805,51 +921,115 @@ class AdversarialRunner(object):
         # If editing, mutate levels just replayed by PLR
         if level_replay and edit_level:
             # Choose base levels for mutation
-            if self.base_levels == 'batch':
-                fixed_seeds = env_info
-            elif self.base_levels == 'easy':
-                if args.num_processes >= 4:
-                    # take top 4
-                    easy = list(np.argsort((agent_info['mean_return'].detach().cpu().numpy() - agent_info['batched_value_loss'].detach().cpu().numpy()))[:4])
-                    fixed_seeds = [env_info[x.item()] for x in easy] * int(args.num_processes/4)
-                else:
-                    # take top 1
-                    easy = np.argmax((agent_info['mean_return'].detach().cpu().numpy() - agent_info['batched_value_loss'].detach().cpu().numpy()))
-                    fixed_seeds = [env_info[easy]] * args.num_processes
+            if not args.train_diffusion:
+                if self.base_levels == 'batch':
+                    fixed_seeds = env_info
+                elif self.base_levels == 'easy':
+                    if args.num_processes >= 4:
+                        # take top 4
+                        easy = list(np.argsort((agent_info['mean_return'].detach().cpu().numpy() - agent_info['batched_value_loss'].detach().cpu().numpy()))[:4])
+                        fixed_seeds = [env_info[x.item()] for x in easy] * int(args.num_processes/4)
+                    else:
+                        # take top 1
+                        easy = np.argmax((agent_info['mean_return'].detach().cpu().numpy() - agent_info['batched_value_loss'].detach().cpu().numpy()))
+                        fixed_seeds = [env_info[easy]] * args.num_processes
 
-            level_sampler, is_updateable = self._get_level_sampler('agent')
+                level_sampler, is_updateable = self._get_level_sampler('agent')
             
             # Edit selected levels
-            self.agent_rollout(
-                agent=None,
-                num_steps=None,
-                is_env=True,
-                edit_level=True,
-                diffusion=diffusion,
-                reducing_noise=reducing_noise,
-                num_edits=args.num_edits,
-                fixed_seeds=fixed_seeds)
-
+            if diffusion:
+                if args.train_diffusion:
+                    obs, action, timestep, next_obs = self.agent_rollout(
+                                                        agent=adversary_env,
+                                                        num_steps=None,
+                                                        is_env=True,
+                                                        edit_level=True,
+                                                        diffusion=diffusion,
+                                                        reducing_noise=reducing_noise,
+                                                        num_edits=args.num_edits,
+                                                        fixed_seeds=env_info['levels'],
+                                                        replay_env=env_info)
+                else:
+                    self.agent_rollout(
+                        agent=None,
+                        num_steps=None,
+                        is_env=True,
+                        edit_level=True,
+                        diffusion=diffusion,
+                        reducing_noise=reducing_noise,
+                        num_edits=args.num_edits,
+                        fixed_seeds=fixed_seeds)
+                    
+    
+            else:
+                self.agent_rollout(
+                    agent=None,
+                    num_steps=None,
+                    is_env=True,
+                    edit_level=True,
+                    diffusion=diffusion,
+                    reducing_noise=reducing_noise,
+                    num_edits=args.num_edits,
+                    fixed_seeds=fixed_seeds)
+                
             self.total_num_edits += 1
             sampled_level_info['num_edits'] = [x+1 for x in sampled_level_info['num_edits']]
-
             # Evaluate edited levels
-            agent_info_edited_level = self.agent_rollout(
+            if args.train_diffusion or self.train_editor:
+                agent_info_edited_level = self.agent_rollout(
                 agent=agent,
                 num_steps=self.agent_rollout_steps,
                 update=self.is_training,
                 level_replay=False,
+                diffusion=diffusion,
                 level_sampler=level_sampler,
                 update_level_sampler=is_updateable,
-                discard_grad=True)
+                discard_grad=True,
+                editing=True)
+            else:
+                agent_info_edited_level = self.agent_rollout(
+                    agent=agent,
+                    num_steps=self.agent_rollout_steps,
+                    update=self.is_training,
+                    level_replay=False,
+                    diffusion=diffusion,
+                    level_sampler=level_sampler,
+                    update_level_sampler=is_updateable,
+                    discard_grad=True,
+                    editing=True)
+                
+            # train generator(via mutation)
+            if self.is_training and args.train_diffusion:
+                returns = agent_info_edited_level['returns']
+                unsolvable = []
+                for r in returns:
+                    if r== [0.0]:
+                        unsolvable.append(1)
+                    else:
+                        unsolvable.append(0)
+
+                # select regret estimator for generator training
+                if args.generator_loss == 'grad_norm':
+                    reward = np.array(agent_info_edited_level['grad_norm_batch']) - np.array(unsolvable) * args.unsolvable_penalty
+                elif args.generator_loss == 'value_loss':
+                    reward = np.array(agent_info_edited_level['value_loss_batch']) - np.array(unsolvable) * args.unsolvable_penalty
+                elif args.generator_loss == 'total_loss':
+                    reward = np.array(agent_info_edited_level['total_loss_batch']) - np.array(unsolvable) * args.unsolvable_penalty
+                elif args.generator_loss == 'unsolvable':
+                    reward = np.array(0.1 - 0.2*np.array(unsolvable))
+                    
+                self.generator.replay_buffer.add(obs, next_obs, action, reward, timestep, np.zeros(args.num_processes), None)
+                self.generator.update()
+            
         # ==== ACCEL end ====
 
-        if args.use_plr:
+        if args.use_plr and not args.train_diffusion:
             self._reconcile_level_store_and_samplers()
             if self.use_editor:
                 self.weighted_num_edits = self._get_weighted_num_edits()
 
         # Update adversary agent final return
+        # print(agent_info)
         env_return = self._compute_env_return(agent_info, adversary_agent_info)
 
         adversary_env_info = defaultdict(float)
@@ -868,12 +1048,27 @@ class AdversarialRunner(object):
                 'dist_entropy': env_dist_entropy,
                 'update_info': info
             })
-
+        
+        if self.is_training and self.train_editor:
+            with torch.no_grad():
+                obs_id = adversary_env.storage.get_obs(-1)
+                next_value = adversary_env.get_value(
+                    obs_id, adversary_env.storage.get_recurrent_hidden_state(-1),
+                    adversary_env.storage.masks[-1]).detach()
+            adversary_env.storage.replace_final_return(env_return)
+            adversary_env.storage.compute_returns(next_value, args.use_gae, args.gamma, args.gae_lambda)
+            env_value_loss, env_action_loss, env_dist_entropy, info = adversary_env.update()
+            adversary_env_info.update({
+                'action_loss': env_action_loss,
+                'value_loss': env_value_loss,
+                'dist_entropy': env_dist_entropy,
+                'update_info': info
+            })
+            
         if self.is_training and self.is_stable_adversary:
             self.num_updates += (self.repeat + 1)
         elif self.is_training:
             self.num_updates += 1
-
         # === LOGGING ===
         # Only update env-related stats when run generates new envs (not level replay)
         log_replay_complexity = level_replay and args.log_replay_complexity
@@ -892,7 +1087,7 @@ class AdversarialRunner(object):
             stats = self.latest_env_stats.copy()
 
         # Log PLR buffer stats
-        if args.use_plr and args.log_plr_buffer_stats:
+        if args.use_plr and args.log_plr_buffer_stats and not args.train_diffusion:
             stats.update(self._get_plr_buffer_stats())
 
         [self.agent_returns.append(r) for b in agent_info['returns'] for r in reversed(b)]
@@ -944,5 +1139,4 @@ class AdversarialRunner(object):
                 'agent_action_complexity': agent_info['action_complexity'],
                 'adversary_action_complexity': adversary_agent_info['action_complexity']  
             }) 
-
         return stats

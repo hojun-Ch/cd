@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import gym
 from algos import PPO, RolloutStorage, ACAgent
 from models import \
     MultigridNetwork, MultigridGlobalCriticNetwork, \
@@ -164,6 +165,8 @@ def make_agent(name, env, args, device='cpu'):
     if is_adversary_env:
         observation_space = env.adversary_observation_space
         action_space = env.adversary_action_space
+        # if args.diffusion:
+        #     action_space = gym.spaces.Box(env.adversary_action_dim)
         num_steps = observation_space['time_step'].high[0]
         recurrent_arch = args.recurrent_adversary_env and args.recurrent_arch
         entropy_coef = args.adv_entropy_coef
